@@ -8,12 +8,16 @@ on:
       - 'move2kube/**'
       - 'pipeline/**'
       - 'e2e/move2kube.sh'
+      - .github/workflows/move2kube-e2e.yaml
+      - .github/workflows/m2k-func.yaml
+      - .github/workflows/main.yml
+
 jobs:
   call-kfunc-workflow:
-    uses: parodos-dev/serverless-workflows/.github/workflows/m2k-func.yaml@main
+    uses: ./.github/workflows/m2k-func.yaml
     secrets: inherit
   call-main-workflow:
-    uses: parodos-dev/serverless-workflows/.github/workflows/main.yml@main
+    uses: ./.github/workflows/main.yml
     with:
       workflow_id: move2kube
     secrets: inherit

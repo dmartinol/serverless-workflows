@@ -10,14 +10,16 @@ on:
       - 'pipeline/**'
       - 'e2e/mta.sh'
       - '!mta/*.svg'
+      - .github/workflows/mta-e2e.yaml
+      - .github/workflows/main.yml
+
 jobs:
   build:
-    uses: parodos-dev/serverless-workflows/.github/workflows/main.yml@main
+    uses: ./.github/workflows/main.yml
     secrets: inherit
     with:
       workflow_id: mta
-      push_pr: false
-
+      it_mode: true
   run-e2e:
     runs-on: ubuntu-latest
     needs: build
@@ -104,7 +106,10 @@ jobs:
 
           # Set the endpoint to the tackle-ui service
           yq --inplace '.spec.podTemplate.container.env |= ( . + [{"name": "QUARKUS_REST_CLIENT_MTA_JSON_URL", "value": "http://tackle-ui.my-konveyor-operator.svc:8080/hub"}, {"name": "BACKSTAGE_NOTIFICATIONS_URL", "value": "http://janus-idp-workflows-backstage.default.svc.cluster.local:7007/api/notifications/"}] )' manifests/01-sonataflow_mtaanalysis.yaml
-
+          
+          # Disable persistence for e2e tests
+          yq  --inplace 'del(.spec.persistence)' manifests/01-sonataflow_mtaanalysis.yaml
+          
           # deploy the manifests created by the  ${{ steps.build-image.outputs.image }}"                                                                    
           kubectl apply -f manifests
           sleep 5

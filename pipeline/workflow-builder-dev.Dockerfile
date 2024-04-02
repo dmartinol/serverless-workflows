@@ -1,11 +1,18 @@
 FROM quay.io/kiegroup/kogito-swf-builder-nightly:main-2024-02-16 AS builder
 
+# Temp hack to provide persistence artifacts
+ENV MAVEN_REPO_URL=https://maven.repository.redhat.com/earlyaccess/all
+
 # variables that can be overridden by the builder
 # To add a Quarkus extension to your application
 ARG QUARKUS_EXTENSIONS
 # Args to pass to the Quarkus CLI
 # add extension command
 ARG QUARKUS_ADD_EXTENSION_ARGS
+
+# Additional java/mvn arguments to pass to the builder.
+# This are is conventient to pass sonataflow and quarkus build time properties.
+ARG MAVEN_ARGS_APPEND
 
 # Argument for passing the resources folder if not current context dir
 ARG WF_RESOURCES

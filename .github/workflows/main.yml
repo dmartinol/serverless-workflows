@@ -6,12 +6,12 @@ on:
       workflow_id:
         required: true
         type: string
-      push_pr:
-        required: false
+      it_mode:
         type: boolean
-        default: true
+        default: false
 
 env:
+  DOCKERFILE: workflow-builder${{ inputs.it_mode== true && '-dev' || ''}}.Dockerfile
   WF_CONFIG_REPO: parodos-dev/serverless-workflows-config
 
 jobs:
@@ -23,6 +23,7 @@ jobs:
 
     - name: Log in to Red Hat Registry
       uses: redhat-actions/podman-login@v1
+      if: ${{ ! inputs.it_mode }}
       with:
         registry: registry.redhat.io
         username: ${{ secrets.REGISTRY_REDHAT_IO_USER }}
@@ -36,18 +37,19 @@ jobs:
         tags: latest ${{ github.sha }}
         extra-args: --ulimit nofile=4096:4096
         containerfiles: |
-          pipeline/workflow-builder.Dockerfile
+          pipeline/${{ env.DOCKERFILE }}
         build-args: |
           WF_RESOURCES=${{ inputs.workflow_id }}/
-          QUARKUS_EXTENSIONS=org.kie.kogito:kogito-addons-quarkus-jobs-knative-eventing:999-SNAPSHOT
+          MAVEN_ARGS_APPEND=-Dkogito.persistence.type=jdbc -Dquarkus.datasource.db-kind=postgresql -Dkogito.persistence.proto.marshaller=false
+          QUARKUS_EXTENSIONS=org.kie:kie-addons-quarkus-persistence-jdbc:999-20240317-SNAPSHOT,io.quarkus:quarkus-jdbc-postgresql:3.2.9.Final,io.quarkus:quarkus-agroal:3.2.9.Final
 
     - name: Buildah push to OCI Arcive
-      if: ${{ ! inputs.push_pr }}
+      if: ${{ inputs.it_mode }}
       run: |
         buildah push serverless-workflow-${{ inputs.workflow_id }}:${{ github.sha }} \
           oci-archive:serverless-workflow-${{ inputs.workflow_id }}-${{ github.sha }}.tar:quay.io/orchestrator/serverless-workflow-${{ inputs.workflow_id }}:${{ github.sha }}
     - name: Save OCI archive
-      if: ${{ ! inputs.push_pr }}
+      if: ${{ inputs.it_mode }}
       uses: actions/upload-artifact@v3
       with:
         name: serverless-workflow-${{ inputs.workflow_id }}-${{ github.sha }}.tar
@@ -55,7 +57,7 @@ jobs:
 
     - name: Push To quay.io
       id: push-to-quay
-      if: ${{ inputs.push_pr }}
+      if: ${{ ! inputs.it_mode }}
       uses: redhat-actions/push-to-registry@v2
       with:
         image: ${{ steps.build-image.outputs.image }}
@@ -75,6 +77,8 @@ jobs:
       pull-requests: write
     steps:
     - uses: actions/checkout@v3
+    - name: Add auto DB migration in props
+      run: echo -e "\nquarkus.flyway.migrate-at-start=true" >> ${{ inputs.workflow_id }}/application.properties
     - name: setup kn-workflow
       run: |
           KN_CLI_URL="https://mirror.openshift.com/pub/openshift-v4/clients/serverless/latest/kn-linux-amd64.tar.gz"
@@ -85,6 +89,28 @@ jobs:
       run: yq -i 'del(.metadata.annotations."sonataflow.org/profile")' ${{ inputs.workflow_id }}/manifests/01-sonataflow*.yaml
     - name: Set container image ref in SonataFlow resource
       run: yq -i '.spec.podTemplate.container.image="quay.io/orchestrator/serverless-workflow-${{ inputs.workflow_id }}:${{ github.sha }}"' ${{ inputs.workflow_id }}/manifests/01-sonataflow*.yaml
+    - name: Set persistence spec in SonataFlow resource
+      run: |
+        yq -i '.spec.podTemplate.container.image="quay.io/orchestrator/serverless-workflow-${{ inputs.workflow_id }}:${{ github.sha }}"' ${{ inputs.workflow_id }}/manifests/01-sonataflow*.yaml
+        yq --inplace '.spec |= (
+          . + {
+            "persistence": {
+              "postgresql": {
+                "secretRef": {
+                  "name": "sonataflow-psql-postgresql",
+                  "userKey": "postgres-username",
+                  "passwordKey": "postgres-password"
+                },
+                "serviceRef": {
+                  "name": "sonataflow-psql-postgresql",
+                  "port": 5432,
+                  "databaseName": "sonataflow",
+                  "databaseSchema": "${{ inputs.workflow_id }}"
+                }
+              }
+            }
+          }
+        )' ${{ inputs.workflow_id }}/manifests/01-sonataflow*.yaml
     - name: Archive manifests
       uses: actions/upload-artifact@v3
       with:
@@ -102,7 +128,7 @@ jobs:
             })
           ).data[0];
     - name: Send PRs to config repo
-      if: ${{ inputs.push_pr }}
+      if: ${{ ! inputs.it_mode }}
       env:
         GH_TOKEN: ${{ secrets.HELM_REPO_TOKEN }}
       run: |
@@ -110,23 +136,28 @@ jobs:
           git config --global user.name ${{ github.event.head_commit.author.name || github.triggering_actor }}
           gh repo clone $WF_CONFIG_REPO config-repo
           cd config-repo
-          git switch -c autopr-$RANDOM
-          ./hack/bump_version.sh ${{ inputs.workflow_id }}:patch patch
-          mkdir -p charts/workflows/charts/${{ inputs.workflow_id }}/templates
-          cp ../${{ inputs.workflow_id }}/manifests/* charts/workflows/charts/${{ inputs.workflow_id }}/templates
+          git switch -c ${{ inputs.workflow_id }}-autopr-$RANDOM
+
+          ./hack/bump_chart_version.sh ${{ inputs.workflow_id }} --bump-patch-version
+
+          mkdir -p charts/${{ inputs.workflow_id }}/templates
+          cp ../${{ inputs.workflow_id }}/manifests/* charts/${{ inputs.workflow_id }}/templates
           git add -A
+
           # determine pr or commit url
           if [ ${{ fromJSON(steps.get_pr_data.outputs.result)}} != "" ]; then
             PR_OR_COMMIT_URL="${{ fromJSON(steps.get_pr_data.outputs.result).html_url }}"
           else
             PR_OR_COMMIT_URL="https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
           fi
-          git commit -m "Automated PR from $PR_OR_COMMIT_URL"
+
+          git commit -m "(${{ inputs.workflow_id }}) Automated PR"
+          echo "Automated PR from $PR_OR_COMMIT_URL" | git commit --amend --file=-
           git remote set-url origin https://${{ env.GH_TOKEN }}@github.com/$WF_CONFIG_REPO
           git push origin HEAD
-          gh pr create -f --title "Automatic manifests generation from $PR_OR_COMMIT_URL" \
+          gh pr create -f --title "${{ inputs.workflow_id }}: Automatic manifests generation" \
             --body "
-              Updating generated manifests for ${{ inputs.workflow_id }} workflow
-
-              This PR was created automatically as a result of merging $PR_OR_COMMIT_URL
-            "
+          Updating generated manifests for ${{ inputs.workflow_id }} workflow
+ 
+          This PR was created automatically as a result of merging $PR_OR_COMMIT_URL
+          "

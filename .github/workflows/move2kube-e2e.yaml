@@ -8,17 +8,20 @@ on:
     paths:
       - 'move2kube/**'
       - 'pipeline/**'
+      - .github/workflows/move2kube-e2e.yaml
+      - .github/workflows/m2k-func.yaml
+      - .github/workflows/main.yml
 
 jobs:
   build:
-    uses: parodos-dev/serverless-workflows/.github/workflows/main.yml@main
+    uses: ./.github/workflows/main.yml
     secrets: inherit
     with:
       workflow_id: move2kube
-      push_pr: false
+      it_mode: true
 
   build-m2k-kfunc:
-    uses: parodos-dev/serverless-workflows/.github/workflows/m2k-func.yaml@main
+    uses: ./.github/workflows/m2k-func.yaml
     secrets: inherit
     with:
       push_pr: false
@@ -99,7 +102,9 @@ jobs:
           ###### end workaround
           
           yq  --inplace '.spec.podTemplate.container |= ( . +  {"env": [{"name": "K_SINK", "value": "http://broker-ingress.knative-eventing.svc.cluster.local/sonataflow-infra/default"}]} )' manifests/01-sonataflow_m2k.yaml
-
+          # Disable persistence for e2e tests
+          yq  --inplace 'del(.spec.persistence)' manifests/01-sonataflow_m2k.yaml
+          
           # deploy the manifests created by the  ${{ steps.build-image.outputs.image }}"                                                                    
           kubectl apply -f manifests
           sleep 5
